@@ -1,92 +1,80 @@
-# Remember to adjust your student ID in meta.xml
 import numpy as np
 import pickle
-import random
-from collections import defaultdict
 
-# Global agent instance
-_q_table = None
+class QNetwork:
+    def __init__(self, state_size, action_size):
+        self.state_size = state_size
+        self.action_size = action_size
+        
+        # Initialize with default weights (will be overwritten when loading)
+        self.weights1 = np.random.randn(state_size, 64) * 0.1
+        self.bias1 = np.zeros(64)
+        self.weights2 = np.random.randn(64, 64) * 0.1
+        self.bias2 = np.zeros(64)
+        self.weights3 = np.random.randn(64, action_size) * 0.1
+        self.bias3 = np.zeros(action_size)
+    
+    def predict(self, state):
+        # Forward pass
+        x = state
+        x = np.dot(x, self.weights1) + self.bias1
+        x = np.maximum(0, x)  # ReLU
+        x = np.dot(x, self.weights2) + self.bias2
+        x = np.maximum(0, x)  # ReLU
+        q_values = np.dot(x, self.weights3) + self.bias3
+        return q_values
+    
+    def load(self, filepath):
+        with open(filepath, 'rb') as f:
+            weights = pickle.load(f)
+        self.weights1 = weights['weights1']
+        self.bias1 = weights['bias1']
+        self.weights2 = weights['weights2']
+        self.bias2 = weights['bias2']
+        self.weights3 = weights['weights3']
+        self.bias3 = weights['bias3']
 
-def get_state_key(observation):
-    """
-    Convert the observation into a hashable state representation.
-    """
-    taxi_row, taxi_col, *station_coords, obstacle_north, obstacle_south, obstacle_east, obstacle_west, passenger_look, destination_look = observation
+# Global model instance
+model = None
+
+def preprocess_state(state):
+    """Normalize state values to handle different grid sizes"""
+    state = np.array(state, dtype=np.float32)
     
-    # Create a simplified state representation
-    # Check if passenger is picked up (if passenger is not visible anywhere, it's in the taxi)
-    has_passenger = int(passenger_look == 0)
+    # Find the maximum coordinate value for normalization
+    max_coordinate = max(max(state[0:10]), 1.0)
     
-    # Include relative position information and obstacles
-    state_key = (
-        taxi_row, taxi_col,
-        has_passenger,
-        passenger_look,
-        destination_look,
-        obstacle_north, obstacle_south, obstacle_east, obstacle_west
-    )
+    # Normalize all spatial coordinates
+    normalized_state = state.copy()
+    normalized_state[0:10] /= max_coordinate
     
-    return state_key
+    return normalized_state
 
 def get_action(obs):
     """
-    Function to be called by the evaluator.
-    This function loads the Q-table and chooses the best action
-    for the given observation.
+    Function used by the environment to get the action from the agent.
     """
-    global _q_table
+    global model
     
-    # Initialize Q-table on first call
-    if _q_table is None:
+    # Lazy-load the model on first call
+    if model is None:
+        state_size = 16
+        action_size = 6
+        model = QNetwork(state_size, action_size)
+        
         try:
-            # Try to load the Q-table from file
-            with open("q_table.pkl", "rb") as f:
-                _q_table = pickle.load(f)
-            # print("Loaded Q-table successfully")
-        except (FileNotFoundError, EOFError):
-            # If file doesn't exist or is corrupted, initialize empty dict
-            _q_table = {}
-            # print("No Q-table found, using random policy")
+            model.load('dqn_model.pkl')
+            print("Model loaded successfully")
+        except:
+            try:
+                model.load('models/best_dqn_model.pkl')
+                print("Best model loaded successfully")
+            except:
+                print("Warning: No model found. Using untrained model.")
     
-    # Get state key
-    state_key = get_state_key(obs)
+    # Preprocess the observation
+    state = preprocess_state(obs)
     
-    # If state is in Q-table, choose the best action
-    if state_key in _q_table:
-        return int(np.argmax(_q_table[state_key]))
-    
-    # If state is not in Q-table, use a fallback strategy
-    
-    # FALLBACK STRATEGY 1: Random action
-    # return random.choice([0, 1, 2, 3, 4, 5])
-    
-    # FALLBACK STRATEGY 2: Simple heuristic
-    taxi_row, taxi_col, *_, obstacle_north, obstacle_south, obstacle_east, obstacle_west, passenger_look, destination_look = obs
-    
-    # If passenger is visible and not picked up, try to pick up
-    if passenger_look == 1:
-        return 4  # PICKUP
-    
-    # If passenger is picked up and at destination, drop off
-    if passenger_look == 0 and destination_look == 1:
-        return 5  # DROPOFF
-    
-    # Otherwise, move in a direction that's not blocked
-    available_moves = []
-    
-    # Check which directions are available
-    if obstacle_north == 0:
-        available_moves.append(1)  # NORTH
-    if obstacle_south == 0:
-        available_moves.append(0)  # SOUTH
-    if obstacle_east == 0:
-        available_moves.append(2)  # EAST
-    if obstacle_west == 0:
-        available_moves.append(3)  # WEST
-    
-    # If no moves are available (shouldn't happen), pick a random action
-    if not available_moves:
-        return random.choice([0, 1, 2, 3, 4, 5])
-    
-    # Choose a random available move
-    return random.choice(available_moves)
+    # Get Q-values and select the best action
+    q_values = model.predict(state)
+    return np.argmax(q_values)
