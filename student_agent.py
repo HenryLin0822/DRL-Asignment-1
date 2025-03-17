@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 import torch.nn as nn
+from collections import deque
 import os
 
 # Define the DQN model using PyTorch
@@ -20,6 +21,12 @@ class DQN(nn.Module):
 model = None
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 passenger_picked_up = False
+
+# For loop detection
+state_history = deque(maxlen=20)  # Store last 20 states
+action_history = deque(maxlen=20)  # Store last 20 actions
+loops_detected = 0
+loop_threshold = 3  # Number of repeated patterns before considering it a loop
 
 def preprocess_state(state):
     """
@@ -67,12 +74,61 @@ def load_model():
     print("Warning: Could not load model from any location. Using untrained model.")
     return False
 
+def detect_loop(state, action):
+    """
+    Detect if the agent is stuck in a loop of repetitive states and actions.
+    Returns True if a loop is detected, False otherwise.
+    """
+    global state_history, action_history, loops_detected
+    
+    # Add current state and action to history
+    state_tuple = tuple(state)
+    state_history.append(state_tuple)
+    action_history.append(action)
+    
+    # Only check for loops if we have enough history
+    if len(state_history) < 10:
+        return False
+    
+    # Check for common loop patterns
+    
+    # Pattern 1: Oscillating between two states (back and forth)
+    if len(state_history) >= 4:
+        if (state_history[-1] == state_history[-3] and 
+            state_history[-2] == state_history[-4] and
+            action_history[-1] == action_history[-3] and
+            action_history[-2] == action_history[-4]):
+            loops_detected += 1
+            return loops_detected >= loop_threshold
+    
+    # Pattern 2: Repeating the same action in the same state multiple times
+    if len(state_history) >= 3:
+        if (state_history[-1] == state_history[-2] == state_history[-3] and
+            action_history[-1] == action_history[-2] == action_history[-3]):
+            loops_detected += 1
+            return loops_detected >= loop_threshold
+    
+    # Pattern 3: Circular movement (returning to the same state after N steps)
+    for cycle_length in range(2, min(6, len(state_history) // 2)):
+        is_cycle = True
+        for i in range(cycle_length):
+            if state_history[-(i+1)] != state_history[-(i+1+cycle_length)]:
+                is_cycle = False
+                break
+        if is_cycle:
+            loops_detected += 1
+            return loops_detected >= loop_threshold
+    
+    # If no loop detected, decrease the counter
+    loops_detected = max(0, loops_detected - 1)
+    return False
+
 def get_action(obs):
     """
     Select an action based on the current observation.
     This function is called by the environment during evaluation.
     """
-    global model, device, passenger_picked_up
+    global model, device, passenger_picked_up, state_history, action_history, loops_detected
     
     # Load model if not already loaded
     if model is None:
@@ -93,7 +149,17 @@ def get_action(obs):
     
     # Quick heuristic for when no model is available
     if model is None:
-        return heuristic_action(obs)
+        action = heuristic_action(obs)
+        
+        # Check for loops
+        if detect_loop(obs, action):
+            print("Loop detected, taking random action")
+            action = np.random.randint(0, 6)  # Take a completely random action
+            loops_detected = 0  # Reset loop counter
+            state_history.clear()  # Clear history
+            action_history.clear()
+        
+        return action
     
     # Preprocess state
     processed_state = preprocess_state(obs)
@@ -105,7 +171,30 @@ def get_action(obs):
     with torch.no_grad():
         q_values = model(state_tensor)
     
-    return q_values.cpu().data.numpy().argmax()
+    # Get best action according to the model
+    q_values_np = q_values.cpu().data.numpy()[0]
+    
+    # If a loop is detected, choose the second-best action instead
+    if detect_loop(obs, np.argmax(q_values_np)):
+        print("Loop detected, taking alternative action")
+        
+        # Zero out the highest Q-value
+        best_action = np.argmax(q_values_np)
+        q_values_np[best_action] = -np.inf
+        
+        # Choose the second-best action
+        action = np.argmax(q_values_np)
+        
+        # If still in a loop, just take a random action
+        if action == best_action or loops_detected > 2*loop_threshold:
+            action = np.random.randint(0, 6)
+            loops_detected = 0  # Reset loop counter
+            state_history.clear()  # Clear history
+            action_history.clear()
+        
+        return action
+    
+    return np.argmax(q_values_np)
 
 def heuristic_action(obs):
     """Simple rule-based policy as fallback"""
