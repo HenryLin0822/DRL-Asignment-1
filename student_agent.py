@@ -59,7 +59,7 @@ def load_model():
         "models/dqn_model_final.pth",
         "./dqn_model.pth",
         "./models/dqn_model_final.pth",
-        "./models/best_dqn_model.pth"
+        #"./models/best_dqn_model.pth"
     ]
     
     for path in model_paths:
