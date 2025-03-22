@@ -16,7 +16,7 @@ class DQN(nn.Module):
         x = torch.relu(self.fc1(x))
         x = torch.relu(self.fc2(x))
         return self.fc3(x)
-
+#
 # Global variables
 model = None
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
